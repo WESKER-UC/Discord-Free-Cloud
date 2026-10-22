@@ -176,6 +176,8 @@ func (e *Engine) UploadFile(ctx context.Context, localFilePath, virtualPath, par
 	fileName := filepath.Base(localFilePath)
 	if virtualPath == "" {
 		virtualPath = "/" + fileName
+	} else {
+		fileName = filepath.Base(filepath.FromSlash(virtualPath))
 	}
 
 	var targets []ServerTarget
@@ -399,6 +401,9 @@ func (e *Engine) runUpload(ctx context.Context, tracker *activeUpload, job *db.J
 		delete(e.activeJobs, job.ID)
 		e.mu.Unlock()
 	}()
+	if isTemporaryUpload(normPath) {
+		defer os.Remove(normPath)
+	}
 
 	f, err := os.Open(normPath)
 	if err != nil {
@@ -654,6 +659,16 @@ func (e *Engine) runUpload(ctx context.Context, tracker *activeUpload, job *db.J
 		Status:          db.JobStatusCompleted,
 		LogMessage:      fmt.Sprintf("Uploaded %s", file.Name),
 	})
+}
+
+func isTemporaryUpload(filePath string) bool {
+	tempDir := syswin.NormalizeLongPath(filepath.Join(os.TempDir(), "discord-free-cloud"))
+	absolutePath := syswin.NormalizeLongPath(filePath)
+	relativePath, err := filepath.Rel(tempDir, absolutePath)
+	return err == nil &&
+		relativePath != "." &&
+		relativePath != ".." &&
+		!strings.HasPrefix(relativePath, ".."+string(filepath.Separator))
 }
 
 func (e *Engine) UploadDir(ctx context.Context, localDirPath, virtualParentPath string, targetGuildIDs ...string) ([]string, error) {

@@ -1,8 +1,8 @@
 # Discord Free Cloud
 
-Turn your Discord servers into private, unlimited cloud storage with end-to-end encryption and instant in-browser 4K media streaming.
+Turn your Discord servers into encrypted cloud storage with instant in-browser 4K media streaming.
 
-[![Go Version](https://img.shields.io/badge/Go-1.22+-00ADD8.svg)](https://golang.org)
+[![Go Version](https://img.shields.io/badge/Go-1.26+-00ADD8.svg)](https://golang.org)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
 ![Dashboard Demo](demo.gif)
@@ -21,6 +21,26 @@ Double click `start.bat` anytime to launch the dashboard at `http://127.0.0.1:80
 
 ---
 
+## Cloud Deployment (Render)
+
+The application now builds as a Linux container and can run as a persistent web service. The existing frontend, API, Discord processing, and WebSocket progress feed stay together on one origin; Netlify's serverless functions are not suitable for the app's persistent SQLite database and long-running jobs.
+
+1. Push this repository to your GitHub account.
+2. In Render, create a Blueprint from the repository and apply the included `render.yaml`.
+3. Set `APP_PASSWORD` when Render prompts for the secret. Use a unique password with at least 16 characters. The dashboard will ask for these HTTP Basic Auth credentials; the default username is `admin`.
+4. Open the deployed `onrender.com` URL and set a separate drive encryption password in the dashboard.
+5. Configure the Discord bot and server as usual.
+
+The Render blueprint mounts persistent storage at `/var/data` for the SQLite database. Keep that disk attached: it stores the file catalog, bot configuration, and chunk metadata. The actual encrypted file chunks continue to be stored in Discord. Back up the persistent disk and keep a separate, recoverable copy of the drive encryption password. In this deployment, the backend receives file contents and can access them while the drive is unlocked; this is not client-side end-to-end encryption against the hosting provider.
+
+Run a single service instance: the current job queue, progress updates, and SQLite database are not shared across replicas.
+
+The hosting provider still sets practical limits on upload size, request duration, temporary disk, and bandwidth. This deployment does not make the existing browser upload flow unlimited; choose a host and plan that fit your file sizes.
+
+`APP_PASSWORD` protects the complete site and API over HTTPS. `CLOUD_MODE=true` prevents startup if that password is missing or shorter than 16 characters. For other container hosts, use the included `Dockerfile`, provide a persistent volume mounted at `/var/data`, and configure `CLOUD_MODE=true`, `APP_PASSWORD`, and `PORT`.
+
+---
+
 ## Cloud Storage Comparison
 
 | Feature | Discord Free Cloud | Google Drive | Dropbox | Mega |
@@ -29,7 +49,7 @@ Double click `start.bat` anytime to launch the dashboard at `http://127.0.0.1:80
 | **Total Storage** | **Unlimited ∞** | 15 GB cap | 2 GB cap | 20 GB cap |
 | **Max File Size** | **Unlimited (500 GB+)** | 15 GB cap | 2 GB cap | 20 GB cap |
 | **In-Browser 4K Video** | **Instant (Zero wait)** | Re-encodes video | Slow buffering | Limited |
-| **Encryption Keys** | **Only You (Local PC)** | Google Staff | Dropbox Staff | Mega |
+| **Encryption Keys** | **Your drive password** | Google Staff | Dropbox Staff | Mega |
 | **Multi-Server Redundancy** | **Yes** | No | No | No |
 | **Telemetry & Tracking** | **Zero (100% Private)** | Ad tracking | Tracked | Tracked |
 
@@ -38,7 +58,7 @@ Double click `start.bat` anytime to launch the dashboard at `http://127.0.0.1:80
 ## Features
 
 - **No File Size Caps**: Splits large files into 7.5 MB parts automatically, letting you store 10 GB, 50 GB, or 500 GB+ files without hitting Discord's 25 MB limit.
-- **Client-Side AES-256-GCM**: Everything is encrypted with AES-256-GCM on your computer before uploading. Discord never sees raw filenames, file types, or contents.
+- **AES-256-GCM Encryption**: File chunks are encrypted before they are sent to Discord. In cloud deployment, the hosted backend handles encryption and holds the key in memory while the drive is unlocked, so use a cloud host you trust.
 - **Instant In-Browser Streaming**: Watch 4K video, listen to music, view images, or read PDFs right inside the browser with fast timeline seeking.
 - **Anti-Ban Protection**: Uses webhooks instead of the Bot API, cycles across storage channels with random jitter, and wraps chunks into valid PNG image containers.
 - **Multi-Server Backup**: Replicate file chunks across multiple Discord servers. If one server is lost, your files remain safe on the others.

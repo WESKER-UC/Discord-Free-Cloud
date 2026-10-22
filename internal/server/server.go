@@ -31,7 +31,8 @@ import (
 
 var upgrader = websocket.Upgrader{
 	CheckOrigin: func(r *http.Request) bool {
-		return true
+		origin := r.Header.Get("Origin")
+		return origin == "" || origin == "http://"+r.Host || origin == "https://"+r.Host
 	},
 }
 
@@ -73,7 +74,7 @@ func NewServer(database *db.Database, discordClient *discord.Client, upEngine *u
 		defer ticker.Stop()
 		for range ticker.C {
 			mem := syswin.GetMemStats()
-			diskSpace, _ := syswin.GetDiskFreeSpace(".")
+			diskSpace, _ := s.getDiskFreeSpace()
 			s.broadcastJSON(map[string]any{
 				"type": "system_stats",
 				"data": map[string]any{
@@ -115,6 +116,10 @@ func (s *Server) broadcastJSON(payload any) {
 }
 
 func (s *Server) RegisterRoutes(mux *http.ServeMux) {
+	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("ok"))
+	})
 	mux.HandleFunc("/ws", s.handleWebSocket)
 	mux.HandleFunc("/api/status", s.handleStatus)
 	mux.HandleFunc("/api/settings", s.handleSettings)
@@ -218,7 +223,7 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	fileCount := s.db.GetFileCount()
 	totalStorageBytes := s.db.GetTotalStorageBytes()
 	activeJobs, _ := s.db.GetActiveJobs()
-	diskSpace, _ := syswin.GetDiskFreeSpace(".")
+	diskSpace, _ := s.getDiskFreeSpace()
 	mem := syswin.GetMemStats()
 
 	botToken, _ := s.db.GetSetting("bot_token")
@@ -253,6 +258,14 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 		"has_password":        passHash != "",
 		"is_unlocked":         isUnlocked,
 	})
+}
+
+func (s *Server) getDiskFreeSpace() (*syswin.DiskSpace, error) {
+	dbPath := os.Getenv("DB_PATH")
+	if dbPath == "" {
+		return syswin.GetDiskFreeSpace(".")
+	}
+	return syswin.GetDiskFreeSpace(filepath.Dir(dbPath))
 }
 
 func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
@@ -608,20 +621,27 @@ func (s *Server) handleUploadFile(w http.ResponseWriter, r *http.Request) {
 		defer file.Close()
 
 		tempDir := filepath.Join(os.TempDir(), "discord-free-cloud")
-		_ = os.MkdirAll(tempDir, 0755)
-		tempPath := filepath.Join(tempDir, header.Filename)
-
-		dst, err := os.Create(tempPath)
-		if err != nil {
-			jsonResponse(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": "Could not create temporary file: " + err.Error()})
+		if err := os.MkdirAll(tempDir, 0700); err != nil {
+			jsonResponse(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": "Could not create temporary upload directory: " + err.Error()})
 			return
 		}
+		dst, err := os.CreateTemp(tempDir, "upload-*")
+		if err != nil {
+			jsonResponse(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": "Could not create temporary upload file: " + err.Error()})
+			return
+		}
+		tempPath := dst.Name()
 		if _, err := io.Copy(dst, file); err != nil {
-			dst.Close()
+			_ = dst.Close()
+			_ = os.Remove(tempPath)
 			jsonResponse(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": "Copy error: " + err.Error()})
 			return
 		}
-		dst.Close()
+		if err := dst.Close(); err != nil {
+			_ = os.Remove(tempPath)
+			jsonResponse(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": "Could not close temporary upload file: " + err.Error()})
+			return
+		}
 
 		parentID := r.FormValue("parent_id")
 		targetGuildID := r.FormValue("target_guild_id")
@@ -637,6 +657,7 @@ func (s *Server) handleUploadFile(w http.ResponseWriter, r *http.Request) {
 
 		jobID, err := s.uploader.UploadFile(context.Background(), tempPath, virtualPath, parentID, targetGuildID)
 		if err != nil {
+			_ = os.Remove(tempPath)
 			jsonResponse(w, http.StatusBadRequest, map[string]any{"ok": false, "error": err.Error()})
 			return
 		}
@@ -901,11 +922,25 @@ func (s *Server) handleCreateTextFile(w http.ResponseWriter, r *http.Request) {
 	}
 
 	tempDir := filepath.Join(os.TempDir(), "discord-free-cloud")
-	_ = os.MkdirAll(tempDir, 0755)
-	tempPath := filepath.Join(tempDir, targetName)
-
-	if err := os.WriteFile(tempPath, []byte(req.Content), 0644); err != nil {
+	if err := os.MkdirAll(tempDir, 0700); err != nil {
+		jsonResponse(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": "Could not create temporary upload directory: " + err.Error()})
+		return
+	}
+	tempFile, err := os.CreateTemp(tempDir, "text-*")
+	if err != nil {
+		jsonResponse(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": "Could not create temporary file: " + err.Error()})
+		return
+	}
+	tempPath := tempFile.Name()
+	if _, err := io.WriteString(tempFile, req.Content); err != nil {
+		_ = tempFile.Close()
+		_ = os.Remove(tempPath)
 		jsonResponse(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": err.Error()})
+		return
+	}
+	if err := tempFile.Close(); err != nil {
+		_ = os.Remove(tempPath)
+		jsonResponse(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": "Could not close temporary file: " + err.Error()})
 		return
 	}
 
@@ -920,6 +955,7 @@ func (s *Server) handleCreateTextFile(w http.ResponseWriter, r *http.Request) {
 
 	jobID, err := s.uploader.UploadFile(context.Background(), tempPath, virtualPath, req.ParentID)
 	if err != nil {
+		_ = os.Remove(tempPath)
 		jsonResponse(w, http.StatusBadRequest, map[string]any{"ok": false, "error": err.Error()})
 		return
 	}

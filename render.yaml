@@ -1,0 +1,27 @@
+services:
+  - type: web
+    name: discord-free-cloud
+    runtime: docker
+    plan: starter
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    healthCheckPath: /healthz
+    disk:
+      name: discord-free-cloud-data
+      mountPath: /var/data
+      sizeGB: 1
+    envVars:
+      - key: CLOUD_MODE
+        value: "true"
+      - key: APP_USERNAME
+        value: admin
+      - key: APP_PASSWORD
+        sync: false
+      - key: HOST
+        value: 0.0.0.0
+      - key: NO_BROWSER
+        value: "true"
+      - key: NO_PROMPT
+        value: "true"
+      - key: DB_PATH
+        value: /var/data/drive.db

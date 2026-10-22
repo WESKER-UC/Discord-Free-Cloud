@@ -1,8 +1,8 @@
 package main
 
 import (
-	"bufio"
 	"context"
+	"crypto/subtle"
 	"encoding/hex"
 	"flag"
 	"fmt"
@@ -13,7 +13,6 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strconv"
-	"strings"
 	"syscall"
 	"time"
 
@@ -27,45 +26,40 @@ import (
 	"discord-free-cloud/internal/syswin"
 	"discord-free-cloud/internal/uploader"
 
-	"golang.org/x/sys/windows"
+	"golang.org/x/term"
 )
 
 func isConsole(fd uintptr) bool {
-	var mode uint32
-	return windows.GetConsoleMode(windows.Handle(fd), &mode) == nil
+	return term.IsTerminal(int(fd))
 }
 
 func readPasswordConsole(prompt string) (string, error) {
 	fmt.Print(prompt)
-	hStdin := windows.Handle(os.Stdin.Fd())
-	var oldMode uint32
-	if err := windows.GetConsoleMode(hStdin, &oldMode); err == nil {
-		newMode := oldMode &^ windows.ENABLE_ECHO_INPUT
-		if err := windows.SetConsoleMode(hStdin, newMode); err == nil {
-			defer func() {
-				_ = windows.SetConsoleMode(hStdin, oldMode)
-				fmt.Println()
-			}()
-		}
-	}
-
-	reader := bufio.NewReader(os.Stdin)
-	line, err := reader.ReadString('\n')
+	password, err := term.ReadPassword(int(os.Stdin.Fd()))
 	if err != nil {
 		return "", err
 	}
-	return strings.TrimRight(line, "\r\n"), nil
+	fmt.Println()
+	return string(password), nil
 }
 
 func main() {
-	portFlag := flag.Int("port", 8080, "web server port")
-	dbPathFlag := flag.String("db", "", "path to storage database file")
-	noBrowserFlag := flag.Bool("no-browser", false, "skip opening browser")
-	noPromptFlag := flag.Bool("no-prompt", false, "skip console password prompt")
-	passwordFlag := flag.String("password", "", "master password flag")
+	portFlag := flag.Int("port", envInt("PORT", 8080), "web server port")
+	hostFlag := flag.String("host", envString("HOST", "127.0.0.1"), "web server bind address")
+	dbPathFlag := flag.String("db", os.Getenv("DB_PATH"), "path to storage database file")
+	noBrowserFlag := flag.Bool("no-browser", envBool("NO_BROWSER"), "skip opening browser")
+	noPromptFlag := flag.Bool("no-prompt", envBool("NO_PROMPT"), "skip console password prompt")
+	passwordFlag := flag.String("password", os.Getenv("MASTER_PASSWORD"), "master password flag")
 	chunkSizeFlag := flag.Int("chunk-size", 8*1024*1024, "part size in bytes")
 	workersFlag := flag.Int("workers", 6, "upload worker count")
 	flag.Parse()
+
+	cloudMode := envBool("CLOUD_MODE")
+	appUsername := envString("APP_USERNAME", "admin")
+	appPassword := os.Getenv("APP_PASSWORD")
+	if cloudMode && (appPassword == "" || len(appPassword) < 16) {
+		log.Fatal("CLOUD_MODE requires APP_PASSWORD to be set to at least 16 characters")
+	}
 
 	dbPath := *dbPathFlag
 	if dbPath == "" {
@@ -191,26 +185,33 @@ func main() {
 	srv.RegisterRoutes(mux)
 
 	targetPort := *portFlag
+	maxPortTries := 10
+	if os.Getenv("PORT") != "" {
+		maxPortTries = 1
+	}
 	var listener net.Listener
-	for try := 0; try < 10; try++ {
-		addr := fmt.Sprintf("127.0.0.1:%d", targetPort+try)
-		l, err := net.Listen("tcp", addr)
+	for try := 0; try < maxPortTries; try++ {
+		port := targetPort + try
+		addr := net.JoinHostPort(*hostFlag, strconv.Itoa(port))
+		listener, err = net.Listen("tcp", addr)
 		if err == nil {
-			listener = l
-			targetPort += try
+			targetPort = port
 			break
 		}
 	}
-
 	if listener == nil {
 		log.Fatalf("could not find an open port starting from %d", *portFlag)
 	}
 
-	serverURL := fmt.Sprintf("http://127.0.0.1:%d", targetPort)
+	serverURL := fmt.Sprintf("http://%s", listener.Addr().String())
 	log.Printf("Server running at %s\n", serverURL)
 
+	var handler http.Handler = mux
+	if appPassword != "" {
+		handler = basicAuth(handler, appUsername, appPassword)
+	}
 	httpServer := &http.Server{
-		Handler:           mux,
+		Handler:           handler,
 		ReadHeaderTimeout: 30 * time.Second,
 		IdleTimeout:       120 * time.Second,
 	}
@@ -239,4 +240,42 @@ func main() {
 
 	_ = httpServer.Shutdown(ctx)
 	fmt.Println("Discord Free Cloud closed.")
+}
+
+func envString(key, fallback string) string {
+	if value := os.Getenv(key); value != "" {
+		return value
+	}
+	return fallback
+}
+
+func envInt(key string, fallback int) int {
+	value, err := strconv.Atoi(os.Getenv(key))
+	if err != nil || value < 1 || value > 65535 {
+		return fallback
+	}
+	return value
+}
+
+func envBool(key string) bool {
+	value, err := strconv.ParseBool(os.Getenv(key))
+	return err == nil && value
+}
+
+func basicAuth(next http.Handler, username, password string) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/healthz" {
+			next.ServeHTTP(w, r)
+			return
+		}
+		providedUsername, providedPassword, ok := r.BasicAuth()
+		usernameMatches := subtle.ConstantTimeCompare([]byte(providedUsername), []byte(username))
+		passwordMatches := subtle.ConstantTimeCompare([]byte(providedPassword), []byte(password))
+		if !ok || usernameMatches != 1 || passwordMatches != 1 {
+			w.Header().Set("WWW-Authenticate", `Basic realm="Discord Free Cloud", charset="UTF-8"`)
+			http.Error(w, "Authentication required", http.StatusUnauthorized)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
 }

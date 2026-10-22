@@ -1,0 +1,14 @@
+.git
+.github
+.vscode
+.idea
+data
+dist
+build
+*.exe
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+checksums.txt
