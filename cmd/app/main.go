@@ -13,6 +13,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -59,6 +60,9 @@ func main() {
 	appPassword := os.Getenv("APP_PASSWORD")
 	if cloudMode && (appPassword == "" || len(appPassword) < 16) {
 		log.Fatal("CLOUD_MODE requires APP_PASSWORD to be set to at least 16 characters")
+	}
+	if err := validateBindSecurity(*hostFlag, appPassword); err != nil {
+		log.Fatal(err)
 	}
 
 	dbPath := *dbPathFlag
@@ -260,6 +264,27 @@ func envInt(key string, fallback int) int {
 func envBool(key string) bool {
 	value, err := strconv.ParseBool(os.Getenv(key))
 	return err == nil && value
+}
+
+func validateBindSecurity(host, password string) error {
+	if isLoopbackHost(host) {
+		return nil
+	}
+	if len(password) < 16 {
+		return fmt.Errorf("binding to non-loopback host %q requires APP_PASSWORD to be at least 16 characters", host)
+	}
+	return nil
+}
+
+func isLoopbackHost(host string) bool {
+	host = strings.TrimSuffix(host, ".")
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		return ip.IsLoopback()
+	}
+	return false
 }
 
 func basicAuth(next http.Handler, username, password string) http.Handler {

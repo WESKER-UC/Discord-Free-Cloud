@@ -9,6 +9,9 @@ Turn your Discord servers into encrypted cloud storage with instant in-browser 4
 
 ---
 
+
+
+
 ## Quickstart
 
 ```powershell
@@ -56,7 +59,23 @@ Build with the included `Dockerfile`, mount a persistent volume at `/var/data`, 
 
 ## Local Use
 
-On Windows, run `start.bat` and open `http://127.0.0.1:8080`. Linux and Android ARM64 users can build the Go application from source; on Android, Termux can run it locally, but the phone must stay online and awake while serving the dashboard.
+On Windows, run `start.bat` and open `http://127.0.0.1:8080`. Linux and Android ARM64 users can build the Go application from source.
+
+### Use the same drive from multiple devices on your Wi-Fi
+
+Run the application on **one** computer or phone and keep it running. Its SQLite database and Discord configuration belong to that server. On every other device, open the same server URL in a browser; do not run another copy of the application on each device, since each copy has its own database.
+
+To share a local server with devices on your Wi-Fi, set a strong HTTP Basic Auth password and bind to all network interfaces:
+
+```sh
+export HOST=0.0.0.0
+export APP_PASSWORD='replace-with-a-unique-secret-of-at-least-16-characters'
+./discord-free-cloud
+```
+
+Set `APP_USERNAME` to change the HTTP Basic Auth username (it defaults to `admin`). Open `http://<server-device-LAN-IP>:8080` from the other devices, sign in with the HTTP Basic Auth credentials, then unlock the drive with its separate encryption password. On Termux, find the phone's LAN IP in Android's connected Wi-Fi network details if Termux cannot read it. Keep the phone online and awake while it serves the dashboard.
+
+Binding to a non-loopback address without an `APP_PASSWORD` of at least 16 characters is rejected. This local HTTP setup is for a trusted private network only; use HTTPS and a persistent cloud host for access over the public internet.
 
 ---
 

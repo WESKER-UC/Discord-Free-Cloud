@@ -6,6 +6,32 @@ import (
 	"testing"
 )
 
+func TestValidateBindSecurity(t *testing.T) {
+	tests := []struct {
+		name     string
+		host     string
+		password string
+		wantErr  bool
+	}{
+		{name: "IPv4 loopback needs no web password", host: "127.0.0.1"},
+		{name: "IPv6 loopback needs no web password", host: "::1"},
+		{name: "localhost needs no web password", host: "localhost"},
+		{name: "all interfaces require password", host: "0.0.0.0", wantErr: true},
+		{name: "LAN address requires password", host: "192.168.1.10", wantErr: true},
+		{name: "non-loopback accepts long password", host: "0.0.0.0", password: "correct-horse-battery-staple"},
+		{name: "non-loopback rejects short password", host: "0.0.0.0", password: "short", wantErr: true},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			err := validateBindSecurity(test.host, test.password)
+			if (err != nil) != test.wantErr {
+				t.Fatalf("validateBindSecurity() error = %v, wantErr %t", err, test.wantErr)
+			}
+		})
+	}
+}
+
 func TestBasicAuth(t *testing.T) {
 	protected := basicAuth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
